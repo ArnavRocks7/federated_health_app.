@@ -13,14 +13,14 @@ import json
 import os
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, List, Mapping, Sequence, Tuple
+from typing import Dict, List, Mapping, MutableMapping, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
 from lightgbm import LGBMClassifier
 from sklearn.compose import ColumnTransformer
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import ParameterSampler, train_test_split
 from sklearn.multioutput import MultiOutputClassifier
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
@@ -183,7 +183,22 @@ def _encode_targets(
     return EncodedTargets(matrix=matrix, los_classes=list(los_classes), diagnosis_mapping=diag_mapping)
 
 
-def _build_pipeline() -> Pipeline:
+DEFAULT_LGB_PARAMS: Dict[str, object] = {
+    "n_estimators": 900,
+    "learning_rate": 0.03,
+    "num_leaves": 63,
+    "min_child_samples": 30,
+    "subsample": 0.8,
+    "colsample_bytree": 0.7,
+    "reg_lambda": 1.0,
+    "reg_alpha": 0.1,
+    "class_weight": "balanced",
+    "random_state": 42,
+    "n_jobs": -1,
+}
+
+
+def _build_pipeline(lgbm_params: Optional[Mapping[str, object]] = None) -> Pipeline:
     preprocessor = ColumnTransformer(
         transformers=[
             ("num", "passthrough", list(NUMERIC_FEATURES)),
@@ -194,19 +209,10 @@ def _build_pipeline() -> Pipeline:
             ),
         ]
     )
-    base_estimator = LGBMClassifier(
-        n_estimators=900,
-        learning_rate=0.03,
-        num_leaves=63,
-        min_child_samples=30,
-        subsample=0.8,
-        colsample_bytree=0.7,
-        reg_lambda=1.0,
-        reg_alpha=0.1,
-        class_weight="balanced",
-        random_state=42,
-        n_jobs=-1,
-    )
+    params = dict(DEFAULT_LGB_PARAMS)
+    if lgbm_params:
+        params.update(lgbm_params)
+    base_estimator = LGBMClassifier(**params)
     classifier = MultiOutputClassifier(base_estimator, n_jobs=-1)
     return Pipeline([("pre", preprocessor), ("clf", classifier)])
 
@@ -239,8 +245,8 @@ def _evaluate_model(pipe: Pipeline, X_val: pd.DataFrame, y_val: EncodedTargets) 
     return metrics
 
 
-def _save_feature_medians(X_train: pd.DataFrame) -> None:
-    medians = X_train[list(NUMERIC_FEATURES)].median().to_dict()
+def _save_feature_medians(feature_source: pd.DataFrame) -> None:
+    medians = feature_source[list(NUMERIC_FEATURES)].median().to_dict()
     with open(os.path.join(MODELS_DIR, "feature_medians.json"), "w") as f:
         json.dump(medians, f, indent=2)
 
@@ -251,6 +257,7 @@ def _save_meta(
     diag_mapping: Mapping[str, int],
     metrics: Mapping[str, float],
     thresholds: Mapping[str, float],
+    hyperparams: Mapping[str, object],
 ) -> None:
     meta = {
         "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
@@ -262,10 +269,60 @@ def _save_meta(
         "diaggrp_mapping": {str(k): int(v) for k, v in diag_mapping.items()},
         "metrics": metrics,
         "optimal_thresholds": thresholds,
+        "hyperparameters": dict(hyperparams),
         "sklearn_version": sklearn.__version__,
     }
     with open(os.path.join(MODELS_DIR, "meta.json"), "w") as f:
         json.dump(meta, f, indent=2)
+
+
+def _hyperparameter_search(
+    X_train: pd.DataFrame,
+    y_train: pd.DataFrame,
+    X_val: pd.DataFrame,
+    targets: EncodedTargets,
+    iterations: int,
+    random_state: int,
+) -> Tuple[Mapping[str, object], Dict[str, float]]:
+    """Perform a lightweight random search over LightGBM settings."""
+
+    search_space: MutableMapping[str, Sequence[object]] = {
+        "n_estimators": [400, 600, 900, 1200],
+        "learning_rate": [0.01, 0.02, 0.03, 0.05],
+        "num_leaves": [31, 47, 63, 95],
+        "min_child_samples": [15, 30, 60],
+        "subsample": [0.6, 0.8, 1.0],
+        "colsample_bytree": [0.6, 0.7, 0.8, 1.0],
+        "reg_lambda": [0.1, 0.5, 1.0, 2.0],
+        "reg_alpha": [0.0, 0.1, 0.3],
+    }
+
+    sampler = ParameterSampler(search_space, n_iter=iterations, random_state=random_state)
+
+    best_params: Mapping[str, object] = dict(DEFAULT_LGB_PARAMS)
+    best_metrics: Dict[str, float] = {}
+    best_score = -np.inf
+
+    for sampled_params in sampler:
+        pipeline = _build_pipeline(sampled_params)
+        pipeline.fit(X_train, y_train)
+        metrics = _evaluate_model(pipeline, X_val, targets)
+        score = 0.0
+        if "readmission_roc_auc" in metrics:
+            score += metrics["readmission_roc_auc"]
+        if "medication_change_roc_auc" in metrics:
+            score += metrics["medication_change_roc_auc"]
+        score += metrics.get("length_of_stay_accuracy", 0.0)
+        score += metrics.get("diagnosis_group_accuracy", 0.0)
+        if score > best_score:
+            best_score = score
+            best_params = {**DEFAULT_LGB_PARAMS, **sampled_params}
+            best_metrics = metrics
+
+    if best_score <= -np.inf:
+        return DEFAULT_LGB_PARAMS, best_metrics
+
+    return best_params, best_metrics
 
 
 def main() -> None:
@@ -308,6 +365,22 @@ def main() -> None:
         default=MODELS_DIR,
         help="Directory where the trained artefacts will be stored.",
     )
+    parser.add_argument(
+        "--search",
+        action="store_true",
+        help="Run a lightweight random search over LightGBM hyperparameters.",
+    )
+    parser.add_argument(
+        "--search-iterations",
+        type=int,
+        default=10,
+        help="Number of random hyperparameter configurations to evaluate when --search is set.",
+    )
+    parser.add_argument(
+        "--no-refit",
+        action="store_true",
+        help="Skip refitting the final model on the full dataset after evaluation.",
+    )
 
     args = parser.parse_args()
 
@@ -336,10 +409,30 @@ def main() -> None:
         stratify=targets.matrix[["readmission", "medication_change"]],
     )
 
-    pipeline = _build_pipeline()
+    best_params = dict(DEFAULT_LGB_PARAMS)
+    val_targets = EncodedTargets(
+        matrix=y_val,
+        los_classes=targets.los_classes,
+        diagnosis_mapping=targets.diagnosis_mapping,
+    )
+
+    if args.search:
+        best_params, search_metrics = _hyperparameter_search(
+            X_train,
+            y_train,
+            X_val,
+            val_targets,
+            iterations=max(1, args.search_iterations),
+            random_state=args.random_state,
+        )
+        if search_metrics:
+            print("Best hyperparameter trial metrics:")
+            print(json.dumps({k: float(v) for k, v in search_metrics.items()}, indent=2))
+
+    pipeline = _build_pipeline(best_params)
     pipeline.fit(X_train, y_train)
 
-    metrics = _evaluate_model(pipeline, X_val, targets)
+    metrics = _evaluate_model(pipeline, X_val, val_targets)
 
     optimal_thresholds = {
         "readmission": metrics.get("readmission_best_threshold", 0.5),
@@ -347,24 +440,31 @@ def main() -> None:
     }
 
     _ensure_directory(args.output)
+
+    if not args.no_refit:
+        pipeline = _build_pipeline(best_params)
+        pipeline.fit(df[list(NUMERIC_FEATURES + CATEGORICAL_FEATURES)], targets.matrix)
+
     with open(os.path.join(args.output, "multi_pipeline.pkl"), "wb") as f:
         import cloudpickle
 
         cloudpickle.dump(pipeline, f)
 
-    _save_feature_medians(X_train)
+    _save_feature_medians(df)
     _save_meta(
         features={"num": NUMERIC_FEATURES, "cat": CATEGORICAL_FEATURES},
         los_classes=targets.los_classes,
         diag_mapping=targets.diagnosis_mapping,
         metrics={k: float(v) for k, v in metrics.items()},
         thresholds=optimal_thresholds,
+        hyperparams=best_params,
     )
 
     report_lines = [
         "Training complete.",
         json.dumps({k: float(v) for k, v in metrics.items()}, indent=2),
         "Optimal thresholds: " + json.dumps(optimal_thresholds),
+        "Best LightGBM params: " + json.dumps(best_params),
     ]
     print("\n".join(report_lines))
 

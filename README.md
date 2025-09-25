@@ -26,7 +26,19 @@ data (and automatically compute better decision thresholds):
 2. Install the dependencies listed in `requirements.txt` (the pinned
    `scikit-learn` version matches the version used during training to avoid
    compatibility drift).
-3. Run the trainer:
+3. (Optional) Run a quick hyperparameter search to squeeze extra performance:
+
+   ```bash
+   python training/train_pipeline.py \
+       --input path/to/your_dataset.csv \
+       --search --search-iterations 15
+   ```
+
+   Add `--no-refit` if you would like to inspect the validation metrics before
+   refitting on the full dataset. When the search flag is omitted, the pipeline
+   trains with well-performing default parameters.
+
+4. Run the trainer:
 
    ```bash
    python training/train_pipeline.py --input path/to/your_dataset.csv
@@ -36,7 +48,7 @@ data (and automatically compute better decision thresholds):
    multi-output LightGBM model, evaluates hold-out metrics, searches for
    F1-optimal thresholds for the binary tasks, and persists the refreshed
    artefacts in `models/`.
-4. Restart the Streamlit dashboard; the app automatically picks up the updated
+5. Restart the Streamlit dashboard; the app automatically picks up the updated
    model, feature medians, and recommended thresholds for the readmission and
    medication change alerts.
 
