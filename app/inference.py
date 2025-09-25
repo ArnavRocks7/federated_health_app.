@@ -158,6 +158,7 @@ def load_artifacts():
         inv_diag_map,
         diag_pretty_labels,
         train_medians,
+        meta.get("optimal_thresholds", {}),
     )
 
 (
@@ -169,7 +170,15 @@ def load_artifacts():
     DIAG_MAP_INV,
     DIAGNOSIS_GROUP_NAMES,
     TRAIN_NUMERIC_MEDIANS,
+    MODEL_DEFAULT_THRESHOLDS,
 ) = load_artifacts()
+
+if MODEL_DEFAULT_THRESHOLDS:
+    for key, value in MODEL_DEFAULT_THRESHOLDS.items():
+        try:
+            DEFAULT_THRESHOLDS[key] = float(value)
+        except (TypeError, ValueError):
+            continue
 
 def _risk_bucket(prob: float) -> str:
     for lower, upper, label in RISK_BANDS:

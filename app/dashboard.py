@@ -1,8 +1,10 @@
 import json
 from typing import Dict
 
+import numpy as np
 import pandas as pd
 import streamlit as st
+from matplotlib import pyplot as plt
 
 from inference import (
     ADMISSION_TYPE_LOOKUP,
@@ -236,12 +238,12 @@ with st.form("patient_form"):
     with diag_col2:
         diag_3 = st.text_input("Tertiary diagnosis code", value=str(form_defaults.get("diag_3", "UNK")), help="Use ICD-9 style codes (e.g., 250 for diabetes).").strip().upper()
 
+    med_values: Dict[str, str] = {}
     with st.expander("Medication orders", expanded=False):
         med_columns = st.columns(3)
         meds_collections = [
             MEDICATION_FIELDS[i::3] for i in range(3)
         ]
-        med_values: Dict[str, str] = {}
         for column, fields in zip(med_columns, meds_collections):
             with column:
                 for med_field in fields:
@@ -260,7 +262,7 @@ with st.form("patient_form"):
         index=["Yes", "No"].index(form_defaults.get("diabetesMed", "Yes")),
     )
 
-    submitted = st.form_submit_button("Run prediction", use_container_width=True)
+    submitted = st.form_submit_button("Run prediction", width="stretch")
 
 patient_inputs = {
     "race": race,
@@ -286,7 +288,7 @@ patient_inputs = {
     "diag_3": diag_3,
     "diabetesMed": diabetes_med,
 }
-patient_inputs.update(med_values if "med_values" in locals() else {})
+patient_inputs.update(med_values)
 
 if submitted:
     st.session_state.patient_defaults = patient_inputs.copy()
@@ -326,14 +328,14 @@ if submitted:
         st.progress(min(max(float(los_info.get("Probability", 0)) / 100.0, 0.0), 1.0))
         top_los_df = pd.DataFrame(los_info.get("Top Alternatives", [])).rename(columns={"Label": "Length of stay", "Probability": "Probability (%)"})
         if not top_los_df.empty:
-            st.dataframe(top_los_df, hide_index=True, use_container_width=True)
+            st.dataframe(top_los_df, hide_index=True, width="stretch")
 
         diag_info = results["Diagnosis Group"]
         st.markdown("#### Diagnosis grouping")
         st.metric("Most likely group", diag_info.get("Prediction", "N/A"), f"{diag_info.get('Probability', 0):.1f}% confidence")
         diag_df = pd.DataFrame(diag_info.get("Top Alternatives", [])).rename(columns={"Label": "Group", "Probability": "Probability (%)"})
         if not diag_df.empty:
-            st.dataframe(diag_df, hide_index=True, use_container_width=True)
+            st.dataframe(diag_df, hide_index=True, width="stretch")
 
     st.markdown("---")
     st.subheader("Detailed outputs")
@@ -353,3 +355,112 @@ if submitted:
             st.info("Distribution details not available for this model.")
     with tabs[1]:
         st.code(json.dumps(results, indent=2), language="json")
+
+    st.markdown("---")
+    st.subheader("Visual analytics")
+
+    readm_prob_pct = float(results["Readmission (<30d)"]["Probability"])
+    los_dist = distributions.get("length_of_stay", {}) if distributions else {}
+    diag_dist = distributions.get("diagnosis_group", {}) if distributions else {}
+
+    chart_row_one = st.columns(2)
+
+    if los_dist:
+        los_labels = list(los_dist.keys())
+        los_values = [float(prob) * 100 for prob in los_dist.values()]
+        fig_los, ax_los = plt.subplots(figsize=(6, 4))
+        ax_los.bar(los_labels, los_values, color=["#4E79A7", "#F28E2B", "#76B7B2"][: len(los_labels)])
+        ax_los.set_ylabel("Probability (%)")
+        ax_los.set_title("Length of stay distribution")
+        for idx, value in enumerate(los_values):
+            ax_los.text(idx, value + 1, f"{value:.1f}%", ha="center", va="bottom", fontsize=9)
+        plt.tight_layout()
+        with chart_row_one[0]:
+            st.pyplot(fig_los)
+        plt.close(fig_los)
+    else:
+        with chart_row_one[0]:
+            st.info("Length of stay distribution not available.")
+
+    pie_values = [readm_prob_pct, max(0.0, 100 - readm_prob_pct)]
+    pie_labels = ["Predicted readmission risk", "Remaining margin"]
+    fig_pie, ax_pie = plt.subplots(figsize=(6, 4))
+    colors = ["#E15759", "#9D9D9D"]
+    wedges, texts, autotexts = ax_pie.pie(
+        pie_values,
+        labels=pie_labels,
+        autopct="%1.1f%%",
+        startangle=120,
+        colors=colors,
+        textprops={"color": "white"},
+    )
+    for text in texts:
+        text.set_color("black")
+    ax_pie.set_title("Readmission probability breakdown")
+    with chart_row_one[1]:
+        st.pyplot(fig_pie)
+    plt.close(fig_pie)
+
+    chart_row_two = st.columns(2)
+
+    if diag_dist:
+        diag_probs = [float(prob) * 100 for prob in diag_dist.values()]
+        fig_hist, ax_hist = plt.subplots(figsize=(6, 4))
+        ax_hist.hist(diag_probs, bins=min(10, max(4, len(diag_probs))), color="#59A14F", edgecolor="#F0F0F0")
+        ax_hist.set_xlabel("Diagnosis probability (%)")
+        ax_hist.set_ylabel("Number of groups")
+        ax_hist.set_title("Diagnosis confidence spread")
+        plt.tight_layout()
+        with chart_row_two[0]:
+            st.pyplot(fig_hist)
+        plt.close(fig_hist)
+    else:
+        with chart_row_two[0]:
+            st.info("Diagnosis probability histogram not available.")
+
+    threshold_grid = np.linspace(5, 95, 19)
+    margin = readm_prob_pct - threshold_grid
+    fig_line, ax_line = plt.subplots(figsize=(6, 4))
+    ax_line.plot(threshold_grid, margin, color="#4E79A7", marker="o", linewidth=2)
+    ax_line.axhline(0, color="#9D9D9D", linestyle="--", linewidth=1)
+    ax_line.axvline(readm_thr * 100, color="#E15759", linestyle=":", linewidth=1)
+    ax_line.scatter([readm_thr * 100], [readm_prob_pct - readm_thr * 100], color="#E15759", zorder=3)
+    ax_line.set_xlabel("Alert threshold (%)")
+    ax_line.set_ylabel("Probability - threshold (pp)")
+    ax_line.set_title("Readmission margin across thresholds")
+    ax_line.grid(True, linestyle="--", linewidth=0.5, alpha=0.5)
+    plt.tight_layout()
+    with chart_row_two[1]:
+        st.pyplot(fig_line)
+    plt.close(fig_line)
+
+    med_status_to_score = {"Down": -1, "No": 0, "Steady": 1, "Up": 2}
+    med_chart_df = pd.DataFrame(
+        [
+            {
+                "Medication": med.replace("-", " → ").title(),
+                "Status": status,
+                "Score": med_status_to_score.get(status, 0),
+            }
+            for med, status in med_values.items()
+        ]
+    )
+
+    if not med_chart_df.empty:
+        fig_scatter, ax_scatter = plt.subplots(figsize=(10, 4))
+        color_map = {"Down": "#E15759", "No": "#9D9D9D", "Steady": "#59A14F", "Up": "#EDC948"}
+        x_positions = np.arange(len(med_chart_df))
+        scatter_colors = [color_map.get(status, "#4E79A7") for status in med_chart_df["Status"]]
+        ax_scatter.scatter(x_positions, med_chart_df["Score"], s=140, c=scatter_colors, edgecolors="white", linewidths=0.8)
+        ax_scatter.set_xticks(x_positions)
+        ax_scatter.set_xticklabels(med_chart_df["Medication"], rotation=45, ha="right")
+        ax_scatter.set_yticks([-1, 0, 1, 2])
+        ax_scatter.set_yticklabels(["Down", "No", "Steady", "Up"])
+        ax_scatter.set_ylabel("Order intensity")
+        ax_scatter.set_title("Medication order directions")
+        ax_scatter.grid(True, linestyle=":", linewidth=0.5, alpha=0.5)
+        plt.tight_layout()
+        st.pyplot(fig_scatter)
+        plt.close(fig_scatter)
+    else:
+        st.info("No medication orders supplied to visualize.")
