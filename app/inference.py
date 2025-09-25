@@ -1,10 +1,12 @@
 import os
 import json
+import warnings
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import cloudpickle
 import numpy as np
 import pandas as pd
+import sklearn
 
 BASE_DIR   = os.path.dirname(os.path.dirname(__file__))
 MODELS_DIR = os.path.join(BASE_DIR, "models")
@@ -120,10 +122,22 @@ def preprocess_patient_input(
     return dfp
 
 def load_artifacts():
+    meta_path = os.path.join(MODELS_DIR, "meta.json")
+    with open(meta_path, "r") as f:
+        meta = json.load(f)
+    expected_sklearn = meta.get("sklearn_version")
+    runtime_sklearn = sklearn.__version__
+    if expected_sklearn and expected_sklearn != runtime_sklearn:
+        warnings.warn(
+            (
+                "Model artefacts were trained with scikit-learn "
+                f"{expected_sklearn} but the runtime is {runtime_sklearn}. "
+                "Install the pinned dependency from requirements.txt to avoid scoring "
+                "differences."
+            )
+        )
     with open(os.path.join(MODELS_DIR, "multi_pipeline.pkl"), "rb") as f:
         pipe = cloudpickle.load(f)
-    with open(os.path.join(MODELS_DIR, "meta.json"), "r") as f:
-        meta = json.load(f)
     num_cols = meta["features"]["num"]
     cat_cols = meta["features"]["cat"]
     feature_order = num_cols + cat_cols
@@ -158,6 +172,7 @@ def load_artifacts():
         inv_diag_map,
         diag_pretty_labels,
         train_medians,
+        meta.get("optimal_thresholds", {}),
     )
 
 (
@@ -169,7 +184,15 @@ def load_artifacts():
     DIAG_MAP_INV,
     DIAGNOSIS_GROUP_NAMES,
     TRAIN_NUMERIC_MEDIANS,
+    MODEL_DEFAULT_THRESHOLDS,
 ) = load_artifacts()
+
+if MODEL_DEFAULT_THRESHOLDS:
+    for key, value in MODEL_DEFAULT_THRESHOLDS.items():
+        try:
+            DEFAULT_THRESHOLDS[key] = float(value)
+        except (TypeError, ValueError):
+            continue
 
 def _risk_bucket(prob: float) -> str:
     for lower, upper, label in RISK_BANDS:

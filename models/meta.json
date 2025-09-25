@@ -72,5 +72,8 @@
     "short",
     "medium",
     "long"
-  ]
+  ],
+  "metrics": {},
+  "optimal_thresholds": {},
+  "sklearn_version": "1.6.1"
 }
