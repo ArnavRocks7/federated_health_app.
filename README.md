@@ -26,7 +26,11 @@ data (and automatically compute better decision thresholds):
 2. Install the dependencies listed in `requirements.txt` (the pinned
    `scikit-learn` version matches the version used during training to avoid
    compatibility drift).
-3. (Optional) Run a quick hyperparameter search to squeeze extra performance:
+3. *(Optional)* Run a quick hyperparameter search to squeeze extra performance
+   before committing to a full retrain. This step explores learning rate, tree
+   depth, and regularisation strength combinations and reports the best
+   validation metrics it encounters. Skip this step if you simply want to reuse
+   the curated defaults.
 
    ```bash
    python training/train_pipeline.py \
@@ -35,8 +39,7 @@ data (and automatically compute better decision thresholds):
    ```
 
    Add `--no-refit` if you would like to inspect the validation metrics before
-   refitting on the full dataset. When the search flag is omitted, the pipeline
-   trains with well-performing default parameters.
+   refitting on the full dataset.
 
 4. Run the trainer:
 

@@ -259,6 +259,13 @@ def _save_meta(
     thresholds: Mapping[str, float],
     hyperparams: Mapping[str, object],
 ) -> None:
+    """Persist metadata describing the refreshed artefacts.
+
+    Including the scikit-learn version that produced the pipeline makes it
+    easier to resolve `InconsistentVersionWarning` messages when the dashboard
+    runs with an older runtime environment.
+    """
+
     meta = {
         "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
         "features": {
