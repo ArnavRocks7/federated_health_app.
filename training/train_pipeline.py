@@ -1,7 +1,7 @@
 """Command line utility to (re)train the healthcare multi-task model.
 
 The script expects a tabular dataset with the same feature space that the
-Streamlit application collects from users.  It performs LightGBM-based
+Streamlit application collects from users.  It performs Random Forest-based
 multi-task classification, evaluates the hold-out performance, performs a
 light-weight search for discriminative thresholds and persists the artefacts in
 ``models/`` so that the dashboard can immediately consume the refreshed model.
@@ -17,7 +17,7 @@ from typing import Dict, List, Mapping, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
-from lightgbm import LGBMClassifier
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.compose import ColumnTransformer
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
 from sklearn.model_selection import train_test_split
@@ -193,18 +193,16 @@ def _build_pipeline() -> Pipeline:
             ),
         ]
     )
-    base_estimator = LGBMClassifier(
-        n_estimators=900,
-        learning_rate=0.03,
-        num_leaves=63,
-        min_child_samples=30,
-        subsample=0.8,
-        colsample_bytree=0.7,
-        reg_lambda=1.0,
-        reg_alpha=0.1,
-        class_weight="balanced",
-        random_state=42,
+    base_estimator = RandomForestClassifier(
+        n_estimators=600,
+        max_depth=None,
+        min_samples_split=6,
+        min_samples_leaf=5,
+        max_features="sqrt",
+        class_weight="balanced_subsample",
+        bootstrap=True,
         n_jobs=-1,
+        random_state=42,
     )
     classifier = MultiOutputClassifier(base_estimator, n_jobs=-1)
     return Pipeline([("pre", preprocessor), ("clf", classifier)])
@@ -238,9 +236,11 @@ def _evaluate_model(pipe: Pipeline, X_val: pd.DataFrame, y_val: EncodedTargets) 
     return metrics
 
 
-def _save_feature_medians(X_train: pd.DataFrame) -> None:
+def _save_feature_medians(X_train: pd.DataFrame, output_dir: str) -> None:
+    """Persist per-feature medians for numeric imputation during inference."""
+
     medians = X_train[list(NUMERIC_FEATURES)].median().to_dict()
-    with open(os.path.join(MODELS_DIR, "feature_medians.json"), "w") as f:
+    with open(os.path.join(output_dir, "feature_medians.json"), "w") as f:
         json.dump(medians, f, indent=2)
 
 
@@ -250,6 +250,7 @@ def _save_meta(
     diag_mapping: Mapping[str, int],
     metrics: Mapping[str, float],
     thresholds: Mapping[str, float],
+    output_dir: str,
 ) -> None:
     meta = {
         "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
@@ -262,7 +263,7 @@ def _save_meta(
         "metrics": metrics,
         "optimal_thresholds": thresholds,
     }
-    with open(os.path.join(MODELS_DIR, "meta.json"), "w") as f:
+    with open(os.path.join(output_dir, "meta.json"), "w") as f:
         json.dump(meta, f, indent=2)
 
 
@@ -350,13 +351,14 @@ def main() -> None:
 
         cloudpickle.dump(pipeline, f)
 
-    _save_feature_medians(X_train)
+    _save_feature_medians(X_train, args.output)
     _save_meta(
         features={"num": NUMERIC_FEATURES, "cat": CATEGORICAL_FEATURES},
         los_classes=targets.los_classes,
         diag_mapping=targets.diagnosis_mapping,
         metrics={k: float(v) for k, v in metrics.items()},
         thresholds=optimal_thresholds,
+        output_dir=args.output,
     )
 
     report_lines = [
