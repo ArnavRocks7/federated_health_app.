@@ -100,10 +100,18 @@ def _normalise_binary(series: pd.Series) -> pd.Series:
         "y": 1,
         "true": 1,
         "1": 1,
+        "ch": 1,
+        "change": 1,
+        "readmitted": 1,
+        "<30": 1,
+        "<=30": 1,
+        ">30": 1,
+        "30": 1,
         "no": 0,
         "n": 0,
         "false": 0,
         "0": 0,
+        "not readmitted": 0,
     }
     mapped = cleaned.map(mapping)
     if mapped.isnull().any():
@@ -224,11 +232,12 @@ def _evaluate_model(pipe: Pipeline, X_val: pd.DataFrame, y_val: EncodedTargets) 
     predictions = pipe.predict(X_val)
     if isinstance(predictions, list):
         predictions = np.column_stack(predictions)
+    proba_outputs = pipe.predict_proba(X_val)
     metrics: Dict[str, float] = {}
     for idx, column in enumerate(y_val.matrix.columns):
         metrics[f"{column}_accuracy"] = accuracy_score(y_val.matrix[column], predictions[:, idx])
         if column in {"readmission", "medication_change"}:
-            proba = pipe.predict_proba(X_val)[idx][:, 1]
+            proba = proba_outputs[idx][:, 1]
             metrics[f"{column}_roc_auc"] = roc_auc_score(y_val.matrix[column], proba)
             metrics[f"{column}_best_threshold"] = _find_optimal_threshold(
                 y_val.matrix[column], proba
@@ -338,7 +347,12 @@ def main() -> None:
     pipeline = _build_pipeline()
     pipeline.fit(X_train, y_train)
 
-    metrics = _evaluate_model(pipeline, X_val, targets)
+    val_targets = EncodedTargets(
+        matrix=y_val.reset_index(drop=True),
+        los_classes=targets.los_classes,
+        diagnosis_mapping=targets.diagnosis_mapping,
+    )
+    metrics = _evaluate_model(pipeline, X_val, val_targets)
 
     optimal_thresholds = {
         "readmission": metrics.get("readmission_best_threshold", 0.5),
