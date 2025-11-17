@@ -238,9 +238,11 @@ def _evaluate_model(pipe: Pipeline, X_val: pd.DataFrame, y_val: EncodedTargets) 
     return metrics
 
 
-def _save_feature_medians(X_train: pd.DataFrame) -> None:
+def _save_feature_medians(X_train: pd.DataFrame, output_dir: str) -> None:
+    """Persist per-feature medians for numeric imputation during inference."""
+
     medians = X_train[list(NUMERIC_FEATURES)].median().to_dict()
-    with open(os.path.join(MODELS_DIR, "feature_medians.json"), "w") as f:
+    with open(os.path.join(output_dir, "feature_medians.json"), "w") as f:
         json.dump(medians, f, indent=2)
 
 
@@ -250,6 +252,7 @@ def _save_meta(
     diag_mapping: Mapping[str, int],
     metrics: Mapping[str, float],
     thresholds: Mapping[str, float],
+    output_dir: str,
 ) -> None:
     meta = {
         "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
@@ -262,7 +265,7 @@ def _save_meta(
         "metrics": metrics,
         "optimal_thresholds": thresholds,
     }
-    with open(os.path.join(MODELS_DIR, "meta.json"), "w") as f:
+    with open(os.path.join(output_dir, "meta.json"), "w") as f:
         json.dump(meta, f, indent=2)
 
 
@@ -350,13 +353,14 @@ def main() -> None:
 
         cloudpickle.dump(pipeline, f)
 
-    _save_feature_medians(X_train)
+    _save_feature_medians(X_train, args.output)
     _save_meta(
         features={"num": NUMERIC_FEATURES, "cat": CATEGORICAL_FEATURES},
         los_classes=targets.los_classes,
         diag_mapping=targets.diagnosis_mapping,
         metrics={k: float(v) for k, v in metrics.items()},
         thresholds=optimal_thresholds,
+        output_dir=args.output,
     )
 
     report_lines = [
