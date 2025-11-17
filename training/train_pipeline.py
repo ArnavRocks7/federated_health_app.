@@ -1,7 +1,7 @@
 """Command line utility to (re)train the healthcare multi-task model.
 
 The script expects a tabular dataset with the same feature space that the
-Streamlit application collects from users.  It performs LightGBM-based
+Streamlit application collects from users.  It performs Random Forest-based
 multi-task classification, evaluates the hold-out performance, performs a
 light-weight search for discriminative thresholds and persists the artefacts in
 ``models/`` so that the dashboard can immediately consume the refreshed model.
@@ -17,7 +17,7 @@ from typing import Dict, List, Mapping, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
-from lightgbm import LGBMClassifier
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.compose import ColumnTransformer
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
 from sklearn.model_selection import train_test_split
@@ -193,18 +193,16 @@ def _build_pipeline() -> Pipeline:
             ),
         ]
     )
-    base_estimator = LGBMClassifier(
-        n_estimators=900,
-        learning_rate=0.03,
-        num_leaves=63,
-        min_child_samples=30,
-        subsample=0.8,
-        colsample_bytree=0.7,
-        reg_lambda=1.0,
-        reg_alpha=0.1,
-        class_weight="balanced",
-        random_state=42,
+    base_estimator = RandomForestClassifier(
+        n_estimators=600,
+        max_depth=None,
+        min_samples_split=6,
+        min_samples_leaf=5,
+        max_features="sqrt",
+        class_weight="balanced_subsample",
+        bootstrap=True,
         n_jobs=-1,
+        random_state=42,
     )
     classifier = MultiOutputClassifier(base_estimator, n_jobs=-1)
     return Pipeline([("pre", preprocessor), ("clf", classifier)])
