@@ -158,7 +158,7 @@ with st.sidebar:
     sample_name = st.selectbox("Patient examples", list(SAMPLE_PATIENTS.keys()), index=0)
     if st.button("Load selected example"):
         st.session_state.patient_defaults = SAMPLE_PATIENTS[sample_name].copy()
-        st.experimental_rerun()
+        st.rerun()
     st.divider()
     st.subheader("Decision thresholds")
     readm_thr = st.slider(
